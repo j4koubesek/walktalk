@@ -4,189 +4,166 @@ import { createClient } from '@supabase/supabase-js'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || ''
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON || ''
 const WEBHOOK_URL = import.meta.env.VITE_WEBHOOK_URL || ''
-
 const sb = (SUPABASE_URL && SUPABASE_ANON) ? createClient(SUPABASE_URL, SUPABASE_ANON) : null
 
 function uid(p='id'){ return p + '_' + Math.random().toString(36).slice(2,10) }
-function fmtDateTime(dt){ return new Date(dt).toLocaleString([], {dateStyle:'short', timeStyle:'short'}) }
+function fmt(dt){ return new Date(dt).toLocaleString([], {dateStyle:'short', timeStyle:'short'}) }
 async function notify(event, data){
   if(!WEBHOOK_URL) return
-  try{
-    await fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:'walktalk',event,data,ts:Date.now()})})
-  }catch(e){ console.warn('Webhook fail', e) }
+  try{ await fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:'walktalk',event,data,ts:Date.now()})}) }catch{}
 }
 
-/** @typedef {{ id:string, name:string, email:string }} User */
-/** @typedef {{ id:string, title:string, host_name:string, host_email:string, start_time:string, end_time:string, pace:string, terrain:string, convo_mode:string, dog_allowed:string, non_smokers_only:boolean, capacity:number, area_label:string, status:string, created_at:string }} Walk */
-
 export default function App(){
-  const [user,setUser] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('wt_user_v4')||'null') }catch{return null} })
+  const [user,setUser] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('wt_user_v6')||'null') }catch{return null} })
   const [tab,setTab] = useState('find')
-  const dbOn = !!sb, mailOn = !!WEBHOOK_URL
-  useEffect(()=>{ try{ localStorage.setItem('wt_user_v4', JSON.stringify(user)) }catch{} }, [user])
-
+  useEffect(()=>{ try{ localStorage.setItem('wt_user_v6', JSON.stringify(user)) }catch{} }, [user])
   return (
     <div className="page">
       <header className="hero">
         <div className="badge">MVP • Supabase</div>
         <h1>WalkTalk</h1>
-        <p className="claim">Poznej lidi v pohybu, ne na fotce.</p>
+        <p className="claim">Poznej lidi v pohybu, ne na fotce. Triády, veřejná místa, lehkost bez tlaku.</p>
         <div className="toolbar">
-          <span className="ind">{dbOn?'Databáze: ON (Supabase)':'Databáze: OFF (nastav v env)'}</span>
-          <span className="ind">{mailOn?'E-maily: ON':'E-maily: OFF'}</span>
-          {user && <span className="ind">Ahoj, {user.name}</span>}
+          <span className="ind">{sb?'Databáze: ON (Supabase)':'Databáze: OFF (env)'}</span>
+          <span className="ind">{WEBHOOK_URL?'E-maily: ON':'E-maily: OFF'}</span>
+          {user && <span className="ind">👋 {user.name}</span>}
         </div>
-        <div className="toolbar">
-          <button className="btn" onClick={()=>setTab('find')}>Najít procházku</button>
-          <button className="btn" onClick={()=>setTab('create')}>Vytvořit procházku</button>
+        <div className="actions">
+          <button className="btn primary" onClick={()=>setTab('create')}>+ Založit procházku</button>
+          <button className="btn" onClick={()=>setTab('find')}>Najít poblíž</button>
           <button className="btn" onClick={()=>setTab('me')}>Můj profil</button>
         </div>
       </header>
-
       <main className="content">
-        {!user ? <Onboarding onDone={setUser} /> : <MainApp user={user} tab={tab} setTab={setTab} />}
+        <Main user={user} setUser={setUser} tab={tab} setTab={setTab} />
       </main>
-
-      <footer className="footer">© {new Date().getFullYear()} WalkTalk — triády, žádné fotky, jen kroky a rozhovor.</footer>
+      <footer className="footer">© {new Date().getFullYear()} WalkTalk — žádné fotky, jen kroky a rozhovor.</footer>
     </div>
   )
 }
 
-function Onboarding({ onDone }){
-  const [name,setName] = useState(''), [email,setEmail] = useState('')
-  function submit(e){
-    e.preventDefault()
-    if(!name.trim()) return alert('Zadej jméno.')
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return alert('Zadej platný e-mail.')
-    onDone({ id: uid('u'), name:name.trim(), email:email.trim() })
-  }
-  return (
-    <form className="card" onSubmit={submit}>
-      <h2>Začneme rychle</h2>
-      <div className="row">
-        <input className="input" placeholder="Křestní jméno" value={name} onChange={e=>setName(e.target.value)} />
-        <input className="input" placeholder="E-mail (na potvrzení)" value={email} onChange={e=>setEmail(e.target.value)} />
-      </div>
-      <button className="btn primary" type="submit">Pokračovat</button>
-      <div className="small">Žádné fotky, žádné hodnocení vzhledu.</div>
-    </form>
-  )
-}
-
-function MainApp({ user, tab, setTab }){
-  const [walks,setWalks] = useState(/** @type {Walk[]} */([]))
-  const [myJoinedIds, setMyJoinedIds] = useState(new Set())
+function Main({ user, setUser, tab, setTab }){
+  const [walks,setWalks] = useState([])
+  const [counts,setCounts] = useState({})
+  const [pendingJoin,setPendingJoin] = useState(null)
 
   useEffect(()=>{
     if(!sb) return
-    loadWalks()
-    loadMyJoins()
-    const ch1 = sb.channel('public:walks').on('postgres_changes',{event:'*',schema:'public',table:'walks'}, loadWalks).subscribe()
-    const ch2 = sb.channel('public:walk_participants').on('postgres_changes',{event:'*',schema:'public',table:'walk_participants'}, ()=>{ loadMyJoins(); }).subscribe()
+    loadWalks(); loadCounts();
+    const ch1 = sb.channel('public:walks').on('postgres_changes',{event:'*',schema:'public',table:'walks'}, ()=>{loadWalks();loadCounts();}).subscribe()
+    const ch2 = sb.channel('public:walk_participants').on('postgres_changes',{event:'*',schema:'public',table:'walk_participants'}, loadCounts).subscribe()
     return ()=>{ sb.removeChannel(ch1); sb.removeChannel(ch2) }
   },[])
 
   async function loadWalks(){
-    const { data, error } = await sb.from('walks').select('*').order('start_time',{ascending:true})
-    if(error){ console.error(error); return }
+    const { data } = await sb.from('walks').select('*').order('start_time',{ascending:true})
     setWalks(data||[])
   }
-
-  async function loadMyJoins(){
-    const { data, error } = await sb.from('walk_participants').select('walk_id').eq('joiner_email', user.email)
-    if(error){ console.error(error); return }
-    setMyJoinedIds(new Set((data||[]).map(r=>r.walk_id)))
+  async function loadCounts(){
+    const { data } = await sb.from('walk_participants').select('walk_id')
+    const c = {}; for(const r of (data||[])) c[r.walk_id]=(c[r.walk_id]||0)+1; setCounts(c)
   }
 
   async function createWalk(f){
-    if(!sb) return alert('DB OFF')
+    if(!sb) return alert('DB není připojena.')
+    if(!user) return setTab('me')
     const ins = {
-      title: f.title || 'Procházka',
-      host_name: user.name,
-      host_email: user.email,
-      start_time: new Date(f.startISO).toISOString(),
-      end_time: new Date(f.endISO).toISOString(),
-      pace: f.pace,
-      terrain: f.terrain,
-      convo_mode: f.convoMode,
-      dog_allowed: f.dogAllowed,
-      non_smokers_only: !!f.nonSmokersOnly,
-      capacity: 3,
-      area_label: f.areaLabel || 'oblast ve městě',
-      status: 'scheduled',
+      title: f.title || 'Procházka', host_name: user.name, host_email: user.email,
+      start_time: new Date(f.startISO).toISOString(), end_time: new Date(f.endISO).toISOString(),
+      pace: f.pace, terrain: f.terrain, convo_mode: f.convoMode, dog_allowed: f.dogAllowed,
+      non_smokers_only: !!f.nonSmokersOnly, capacity: 3, area_label: f.areaLabel || 'oblast ve městě', status:'scheduled'
     }
     const { error } = await sb.from('walks').insert(ins)
     if(error){ alert('Chyba při založení'); console.error(error); return }
     setTab('find')
   }
 
-  async function joinWalk(w){
-    if(!sb) return
-    // count current
-    const { count, error:errCount } = await sb.from('walk_participants').select('*', {count:'exact', head:true}).eq('walk_id', w.id)
-    if(errCount){ console.error(errCount); alert('Nepodařilo se načíst kapacitu.'); return }
-    const nowCount = (count||0) + 1
-    if(nowCount > w.capacity) return alert('Už je plno.')
-
-    // insert participation
-    const ins = { walk_id:w.id, joiner_name:user.name, joiner_email:user.email }
+  async function doJoin(w, u){
+    const current = (counts[w.id]||0)
+    if(current+1 > w.capacity) return alert('Už je plno.')
+    const ins = { walk_id:w.id, joiner_name:u.name, joiner_email:u.email }
     const { error } = await sb.from('walk_participants').insert(ins)
-    if(error){ alert('Nepodařilo se přidat.'); console.error(error); return }
+    if(error){ alert('Nepovedlo se přidat.'); console.error(error); return }
 
-    // update local joined set for okamžitá UI odezva
-    setMyJoinedIds(prev => new Set([...prev, w.id]))
+    const { data: plist } = await sb.from('walk_participants').select('joiner_email,joiner_name').eq('walk_id', w.id)
+    const participantsEmails = (plist||[]).map(p=>p.joiner_email)
+    const participants = plist||[]
 
-    // send webhooks
-    await notify('joined',{ walk: pickPublic(w), host:{name:w.host_name, email:w.host_email}, joiner:{name:user.name, email:user.email}, counts:{now:nowCount, max:w.capacity} })
-    if(nowCount>=w.capacity){
-      await notify('capacity_reached',{ walk: pickPublic(w), host:{name:w.host_name, email:w.host_email}, lastJoiner:{name:user.name, email:user.email}, counts:{now:nowCount, max:w.capacity} })
+    await notify('joined',{
+      walk: pickPublic(w),
+      host:{name:w.host_name,email:w.host_email},
+      joiner:{name:u.name,email:u.email},
+      counts:{now:current+1, max:w.capacity}
+    })
+
+    if(current+1 >= w.capacity){
+      await notify('capacity_reached',{
+        walk: pickPublic(w),
+        host:{name:w.host_name,email:w.host_email},
+        lastJoiner:{name:u.name,email:u.email},
+        participantsEmails,
+        participants,
+        counts:{now:current+1, max:w.capacity}
+      })
       await sb.from('walks').update({status:'confirmed'}).eq('id', w.id)
     }
-    alert('Přihlášen/a. Po naplnění pošleme potvrzení.')
+    alert('Přihlášen/a.')
+  }
+
+  function handleJoinClick(w){
+    if(user){ doJoin(w, user); return }
+    setPendingJoin(w)
+  }
+  function handleGateSubmit(name,email){
+    const cleanName = name.trim(), cleanEmail = email.trim()
+    if(!cleanName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return alert('Zadej platné údaje.')
+    const u = { id: uid('u'), name: cleanName, email: cleanEmail }
+    setUser(u)
+    if(pendingJoin){ doJoin(pendingJoin, u); setPendingJoin(null) }
   }
 
   return (
     <>
-      {tab==='find' && <Find walks={walks} onJoin={joinWalk} myJoinedIds={myJoinedIds} />}
-      {tab==='create' && <Create onCreate={createWalk} />}
-      {tab==='me' && <Profile me={user} />}
+      {tab==='find' && <Find walks={walks} counts={counts} onJoin={handleJoinClick} />}
+      {tab==='create' && <Create onCreate={createWalk} requireProfile={!user} />}
+      {tab==='me' && <Profile me={user} setMe={setUser} />}
+      {!user && pendingJoin && <JoinGate onClose={()=>setPendingJoin(null)} onSubmit={handleGateSubmit} />}
     </>
   )
 }
 
-function Find({ walks, onJoin, myJoinedIds }){
+function Find({ walks, counts, onJoin }){
   if(!walks.length) return <div className="card">Zatím žádné procházky.</div>
   return (
     <div className="list">
-      {walks.map(w => {
-        const joined = myJoinedIds.has(w.id)
-        return (
-          <div key={w.id} className="card">
-            <div className="row" style={{justifyContent:'space-between',alignItems:'baseline'}}>
-              <h3 style={{margin:0}}>{w.title}</h3>
-              <span className="tag">{w.status==='confirmed'?'✅ potvrzeno':`kapacita: ${w.capacity}`}</span>
-            </div>
-            <div className="row small">
-              <span>📅 {fmtDateTime(w.start_time)} – {fmtDateTime(w.end_time)}</span>
-              <span>•</span>
-              <span>📍 {w.area_label}</span>
-            </div>
-            <div className="row small">
-              <span>Pace: {w.pace}</span>
-              <span>•</span>
-              <span>Terén: {w.terrain}</span>
-              <span>•</span>
-              <span>Režim: {w.convo_mode}</span>
-            </div>
-            <button className="btn primary" disabled={joined || w.status==='confirmed'} onClick={()=>onJoin(w)}>{joined?'Přihlášen/a':'Přidat se'}</button>
+      {walks.map(w => (
+        <div key={w.id} className="card">
+          <div className="row" style={{justifyContent:'space-between',alignItems:'baseline'}}>
+            <h3 style={{margin:0}}>{w.title}</h3>
+            <span className="tag">{w.status==='confirmed'?'✅ potvrzeno':`${(counts[w.id]||0)}/${w.capacity}`}</span>
           </div>
-        )
-      })}
+          <div className="row small">
+            <span>📅 {fmt(w.start_time)} – {fmt(w.end_time)}</span>
+            <span>•</span>
+            <span>📍 {w.area_label}</span>
+          </div>
+          <div className="row small">
+            <span>Tempo: {w.pace}</span>
+            <span>•</span>
+            <span>Terén: {w.terrain}</span>
+            <span>•</span>
+            <span>Režim: {w.convo_mode}</span>
+          </div>
+          <div className="row" style={{justifyContent:'flex-end'}}>
+            <button className="btn" onClick={()=>onJoin(w)}>Přidat se</button>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
 
-function Create({ onCreate }){
+function Create({ onCreate, requireProfile }){
   const [title,setTitle] = useState('Večerní okruh')
   const [start,setStart] = useState(()=> new Date(Date.now()+60*60000).toISOString().slice(0,16))
   const [end,setEnd] = useState(()=> new Date(Date.now()+90*60000).toISOString().slice(0,16))
@@ -201,16 +178,18 @@ function Create({ onCreate }){
     e.preventDefault()
     onCreate({ title, startISO:start, endISO:end, pace, terrain, convoMode:convo, dogAllowed:dog, nonSmokersOnly:nonSmokers, areaLabel:area })
   }
+
   return (
     <form className="card" onSubmit={submit}>
-      <h2>Vytvořit procházku</h2>
+      <h2>Založit procházku</h2>
+      {requireProfile && <div className="small">Než publikuješ, vyplň prosím jméno a e‑mail (záložka „Můj profil“).</div>}
       <input className="input" value={title} onChange={e=>setTitle(e.target.value)} />
       <div className="row">
-        <label className="small">Od:</label><input className="input" type="datetime-local" value={start} onChange={e=>setStart(e.target.value)} />
-        <label className="small">Do:</label><input className="input" type="datetime-local" value={end} onChange={e=>setEnd(e.target.value)} />
+        <label>Od:</label><input className="input" type="datetime-local" value={start} onChange={e=>setStart(e.target.value)} />
+        <label>Do:</label><input className="input" type="datetime-local" value={end} onChange={e=>setEnd(e.target.value)} />
       </div>
       <div className="row">
-        <label>Pace:</label>
+        <label>Tempo:</label>
         <select value={pace} onChange={e=>setPace(e.target.value)}>
           <option value="slow">pomalé</option>
           <option value="medium">střední</option>
@@ -239,21 +218,54 @@ function Create({ onCreate }){
         <label><input type="checkbox" checked={nonSmokers} onChange={e=>setNonSmokers(e.target.checked)} /> Jen nekuřáci</label>
       </div>
       <input className="input" value={area} onChange={e=>setArea(e.target.value)} placeholder="oblast startu (rozmazaně)" />
-      <button className="btn primary" type="submit">Publikovat</button>
-      <div className="small">Po publikaci se karta objeví v „Najít procházku“.</div>
+      <div className="row" style={{justifyContent:'flex-end'}}>
+        <button className="btn primary" type="submit">Publikovat</button>
+      </div>
+      <div className="small">Po publikaci se karta objeví v „Najít poblíž“.</div>
     </form>
   )
 }
 
-function Profile({ me }){
+function Profile({ me, setMe }){
+  if(!me){
+    const [name,setName] = React.useState('')
+    const [email,setEmail] = React.useState('')
+    function submit(e){ e.preventDefault(); if(!name.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return alert('Zadej platné údaje.'); setMe({ id: uid('u'), name:name.trim(), email:email.trim() }) }
+    return (
+      <form className="card" onSubmit={submit}>
+        <h2>Vytvořit profil</h2>
+        <div className="row"><input className="input" placeholder="Křestní jméno" value={name} onChange={e=>setName(e.target.value)} /><input className="input" placeholder="E-mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
+        <div className="row" style={{justifyContent:'flex-end'}}><button className="btn primary">Uložit</button></div>
+        <div className="small">Profil slouží jen k zasílání potvrzení a koordinaci.</div>
+      </form>
+    )
+  }
   return (
     <div className="card">
       <h2>Můj profil</h2>
       <div className="row">
-        <input className="input" value={me.name} readOnly />
-        <input className="input" value={me.email} readOnly />
+        <input className="input" value={me.name} onChange={e=>setMe({...me, name:e.target.value})} />
+        <input className="input" value={me.email} onChange={e=>setMe({...me, email:e.target.value})} />
       </div>
       <div className="small">Údaje slouží jen k zasílání potvrzení a koordinaci.</div>
+    </div>
+  )
+}
+
+function JoinGate({ onClose, onSubmit }){
+  const [name,setName] = useState('')
+  const [email,setEmail] = useState('')
+  return (
+    <div className="modal" role="dialog" aria-modal="true">
+      <div className="panel">
+        <h3>Rychlé potvrzení</h3>
+        <p className="small">Zadej prosím jméno a e‑mail, ať ti můžeme poslat potvrzení a případné změny.</p>
+        <div className="row"><input className="input" placeholder="Křestní jméno" value={name} onChange={e=>setName(e.target.value)} /><input className="input" placeholder="E-mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
+        <div className="row" style={{justifyContent:'flex-end'}}>
+          <button className="btn" onClick={onClose}>Zavřít</button>
+          <button className="btn primary" onClick={()=>onSubmit(name,email)}>Potvrdit a přidat se</button>
+        </div>
+      </div>
     </div>
   )
 }
