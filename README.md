@@ -1,22 +1,17 @@
-# WalkTalk + Supabase (MVP)
+# WalkTalk + Supabase (MVP v2)
 
-## Co to umí
-- Sdílené procházky přes databázi (Supabase)
-- Vytváření a připojení se k procházce
-- Webhook do Make.com na `joined` a `capacity_reached`
+Opraveno:
+- Tlačítka „Najít / Vytvořit / Můj profil“ přepínají záložky (ne scroll) – funguje i v iframe.
+- „Publikovat“ po úspěchu přepne na „Najít“.
+- Připojení k Supabase, realtime refresh, webhooky `joined` a `capacity_reached`.
 
-## Jak nastavit
-1) Vytvoř projekt na https://supabase.com a zkopíruj **Project URL** a **anon key** (Settings → API).
-2) V SQL editoru spusť DDL níže (tabulky + RLS).
-3) Na Vercelu nastav env proměnné:
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_ANON`
-   - (volitelně) `VITE_WEBHOOK_URL` pro Make
-4) Deploy (Vercel).
+## Nastavení
 
-## SQL (vložit do Supabase SQL editoru)
+### 1) Supabase – projekt + SQL
+V Supabase (Settings → API) zkopíruj `Project URL` a `anon key`.
+V **SQL Editoru** spusť:
+
 ```sql
--- Walks
 create table if not exists public.walks (
   id uuid primary key default gen_random_uuid(),
   title text not null,
@@ -35,7 +30,6 @@ create table if not exists public.walks (
   created_at timestamptz default now()
 );
 
--- Participants
 create table if not exists public.walk_participants (
   id uuid primary key default gen_random_uuid(),
   walk_id uuid not null references public.walks(id) on delete cascade,
@@ -44,7 +38,6 @@ create table if not exists public.walk_participants (
   joined_at timestamptz default now()
 );
 
--- RLS – MVP: otevřené policy (pilot)
 alter table public.walks enable row level security;
 alter table public.walk_participants enable row level security;
 
@@ -58,3 +51,18 @@ create policy "wp insert"     on public.walk_participants for insert with check 
 create policy "wp update"     on public.walk_participants for update using (true);
 create policy "wp delete"     on public.walk_participants for delete using (true);
 ```
+
+Volitelné (doporučeno pro živý refresh): **Database → Replication → Realtime** → povolit pro `walks` a `walk_participants`.
+
+### 2) Vercel – proměnné prostředí
+V projektu nastav a redeploy:
+- `VITE_SUPABASE_URL` = (Project URL)
+- `VITE_SUPABASE_ANON` = (anon key)
+- `VITE_WEBHOOK_URL` = (URL z Make – Custom Webhook)
+
+### 3) Make – e-maily (SMTP)
+Router se dvěma větvemi:
+- `event = joined` → SMTP Email (To: `data → host → email` [+ CC joiner])
+- `event = capacity_reached` → SMTP Email (To: host)
+
+Hotovo.
