@@ -8,15 +8,34 @@ const sb = (SUPABASE_URL && SUPABASE_ANON) ? createClient(SUPABASE_URL, SUPABASE
 
 function uid(p='id'){ return p + '_' + Math.random().toString(36).slice(2,10) }
 function fmt(dt){ return new Date(dt).toLocaleString([], {dateStyle:'short', timeStyle:'short'}) }
+function icsFor(w){
+  const fmtZ = (iso)=> new Date(iso).toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z')
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//WalkTalk//CZ',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${w.id}@walktalk`,
+    `DTSTAMP:${fmtZ(new Date().toISOString())}`,
+    `DTSTART:${fmtZ(w.start_time)}`,
+    `DTEND:${fmtZ(w.end_time)}`,
+    `SUMMARY:WalkTalk – ${w.title}`,
+    `DESCRIPTION:Triáda. Sejdeme se poblíž: ${w.area_label}.`,
+    `LOCATION:${w.area_label}`,
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ].join('\\n')
+}
 async function notify(event, data){
   if(!WEBHOOK_URL) return
   try{ await fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:'walktalk',event,data,ts:Date.now()})}) }catch{}
 }
 
 export default function App(){
-  const [user,setUser] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('wt_user_v6')||'null') }catch{return null} })
+  const [user,setUser] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('wt_user_v7')||'null') }catch{return null} })
   const [tab,setTab] = useState('find')
-  useEffect(()=>{ try{ localStorage.setItem('wt_user_v6', JSON.stringify(user)) }catch{} }, [user])
+  useEffect(()=>{ try{ localStorage.setItem('wt_user_v7', JSON.stringify(user)) }catch{} }, [user])
   return (
     <div className="page">
       <header className="hero">
@@ -87,12 +106,12 @@ function Main({ user, setUser, tab, setTab }){
 
     const { data: plist } = await sb.from('walk_participants').select('joiner_email,joiner_name').eq('walk_id', w.id)
     const participantsEmails = (plist||[]).map(p=>p.joiner_email)
-    const participants = plist||[]
 
     await notify('joined',{
       walk: pickPublic(w),
       host:{name:w.host_name,email:w.host_email},
       joiner:{name:u.name,email:u.email},
+      participantsEmails,
       counts:{now:current+1, max:w.capacity}
     })
 
@@ -102,8 +121,8 @@ function Main({ user, setUser, tab, setTab }){
         host:{name:w.host_name,email:w.host_email},
         lastJoiner:{name:u.name,email:u.email},
         participantsEmails,
-        participants,
-        counts:{now:current+1, max:w.capacity}
+        counts:{now:current+1, max:w.capacity},
+        ics: icsFor(w)
       })
       await sb.from('walks').update({status:'confirmed'}).eq('id', w.id)
     }
@@ -142,6 +161,7 @@ function Find({ walks, counts, onJoin }){
             <h3 style={{margin:0}}>{w.title}</h3>
             <span className="tag">{w.status==='confirmed'?'✅ potvrzeno':`${(counts[w.id]||0)}/${w.capacity}`}</span>
           </div>
+          <div className="spacer"></div>
           <div className="row small">
             <span>📅 {fmt(w.start_time)} – {fmt(w.end_time)}</span>
             <span>•</span>
@@ -154,8 +174,9 @@ function Find({ walks, counts, onJoin }){
             <span>•</span>
             <span>Režim: {w.convo_mode}</span>
           </div>
+          <div className="spacer"></div>
           <div className="row" style={{justifyContent:'flex-end'}}>
-            <button className="btn" onClick={()=>onJoin(w)}>Přidat se</button>
+            <button className="btn primary" onClick={()=>onJoin(w)}>Přidat se</button>
           </div>
         </div>
       ))}
@@ -183,25 +204,29 @@ function Create({ onCreate, requireProfile }){
     <form className="card" onSubmit={submit}>
       <h2>Založit procházku</h2>
       {requireProfile && <div className="small">Než publikuješ, vyplň prosím jméno a e‑mail (záložka „Můj profil“).</div>}
-      <input className="input" value={title} onChange={e=>setTitle(e.target.value)} />
+      <div className="spacer"></div>
       <div className="row">
-        <label>Od:</label><input className="input" type="datetime-local" value={start} onChange={e=>setStart(e.target.value)} />
-        <label>Do:</label><input className="input" type="datetime-local" value={end} onChange={e=>setEnd(e.target.value)} />
+        <label>Nadpis</label>
+        <input className="input" value={title} onChange={e=>setTitle(e.target.value)} style={{flex:1}}/>
       </div>
       <div className="row">
-        <label>Tempo:</label>
+        <label>Od</label><input className="input" type="datetime-local" value={start} onChange={e=>setStart(e.target.value)} />
+        <label>Do</label><input className="input" type="datetime-local" value={end} onChange={e=>setEnd(e.target.value)} />
+      </div>
+      <div className="row">
+        <label>Tempo</label>
         <select value={pace} onChange={e=>setPace(e.target.value)}>
           <option value="slow">pomalé</option>
           <option value="medium">střední</option>
           <option value="fast">svižné</option>
         </select>
-        <label>Terén:</label>
+        <label>Terén</label>
         <select value={terrain} onChange={e=>setTerrain(e.target.value)}>
           <option value="city">město</option>
           <option value="nature">příroda</option>
           <option value="mixed">kombinace</option>
         </select>
-        <label>Režim:</label>
+        <label>Režim</label>
         <select value={convo} onChange={e=>setConvo(e.target.value)}>
           <option value="silent">tichá</option>
           <option value="light">lehká</option>
@@ -209,19 +234,21 @@ function Create({ onCreate, requireProfile }){
         </select>
       </div>
       <div className="row">
-        <label>Psi:</label>
+        <label>Psi</label>
         <select value={dog} onChange={e=>setDog(e.target.value)}>
           <option value="indifferent">nezáleží</option>
           <option value="yes">se psem OK</option>
           <option value="no">nechci psa</option>
         </select>
-        <label><input type="checkbox" checked={nonSmokers} onChange={e=>setNonSmokers(e.target.checked)} /> Jen nekuřáci</label>
+        <label className="small"><input type="checkbox" checked={nonSmokers} onChange={e=>setNonSmokers(e.target.checked)} /> Jen nekuřáci</label>
       </div>
-      <input className="input" value={area} onChange={e=>setArea(e.target.value)} placeholder="oblast startu (rozmazaně)" />
+      <div className="row">
+        <label>Oblast startu</label>
+        <input className="input" value={area} onChange={e=>setArea(e.target.value)} style={{flex:1}} />
+      </div>
       <div className="row" style={{justifyContent:'flex-end'}}>
         <button className="btn primary" type="submit">Publikovat</button>
       </div>
-      <div className="small">Po publikaci se karta objeví v „Najít poblíž“.</div>
     </form>
   )
 }
@@ -234,6 +261,7 @@ function Profile({ me, setMe }){
     return (
       <form className="card" onSubmit={submit}>
         <h2>Vytvořit profil</h2>
+        <div className="spacer"></div>
         <div className="row"><input className="input" placeholder="Křestní jméno" value={name} onChange={e=>setName(e.target.value)} /><input className="input" placeholder="E-mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
         <div className="row" style={{justifyContent:'flex-end'}}><button className="btn primary">Uložit</button></div>
         <div className="small">Profil slouží jen k zasílání potvrzení a koordinaci.</div>
@@ -243,6 +271,7 @@ function Profile({ me, setMe }){
   return (
     <div className="card">
       <h2>Můj profil</h2>
+      <div className="spacer"></div>
       <div className="row">
         <input className="input" value={me.name} onChange={e=>setMe({...me, name:e.target.value})} />
         <input className="input" value={me.email} onChange={e=>setMe({...me, email:e.target.value})} />

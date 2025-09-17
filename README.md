@@ -1,8 +1,10 @@
-# WalkTalk + Supabase (MVP v2.3c)
+# WalkTalk + Supabase (MVP v2.4)
 
-- Hezčí UI (gradient + glassy karty).
-- Veřejný seznam + join-gate.
-- Počítadlo `x/3`.
-- `capacity_reached` webhook posílá `lastJoiner` i `participantsEmails`.
+Co je nově:
+- **Webhook payloady** (z frontendu):
+  - `joined`: `{ walk, host, joiner, participantsEmails, counts }`
+  - `capacity_reached`: `{ walk, host, lastJoiner, participantsEmails, counts, ics }`
+- `ics` je generovaný přímo na webu (posílá se jako `data.ics`).
+- Vzhled: větší mezery/paddingy, lepší rozestupy.
 
-**Nasazení**: nahraj obsah složky `walktalk-supabase/` do kořene repa, nastav env ve Vercelu, redeploy. Supabase tabulky beze změny.
+Nasazení: nahraj obsah složky `walktalk-supabase/` do kořene repa, nastav env (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON`, `VITE_WEBHOOK_URL`), redeploy.
