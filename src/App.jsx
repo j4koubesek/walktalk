@@ -25,7 +25,7 @@ function icsFor(w){
     `LOCATION:${w.area_label}`,
     'END:VEVENT',
     'END:VCALENDAR'
-  ].join('\\n')
+  ].join('\n')
 }
 async function notify(event, data){
   if(!WEBHOOK_URL) return
@@ -69,7 +69,7 @@ function Main({ user, setUser, tab, setTab }){
   useEffect(()=>{
     if(!sb) return
     loadWalks(); loadCounts();
-    const ch1 = sb.channel('public:walks').on('postgres_changes',{event:'*',schema:'public',table:'walks'}, ()=>{loadWalks();loadCounts();}).subscribe()
+    const ch1 = sb.channel('public:walks').on('postgres_changes',{event:'*',schema:'public',table:'walks'}, (p)=>{loadWalks();loadCounts();}).subscribe()
     const ch2 = sb.channel('public:walk_participants').on('postgres_changes',{event:'*',schema:'public',table:'walk_participants'}, loadCounts).subscribe()
     return ()=>{ sb.removeChannel(ch1); sb.removeChannel(ch2) }
   },[])
@@ -92,36 +92,44 @@ function Main({ user, setUser, tab, setTab }){
       pace: f.pace, terrain: f.terrain, convo_mode: f.convoMode, dog_allowed: f.dogAllowed,
       non_smokers_only: !!f.nonSmokersOnly, capacity: 3, area_label: f.areaLabel || 'oblast ve městě', status:'scheduled'
     }
-    const { error } = await sb.from('walks').insert(ins)
+    const { data: inserted, error } = await sb.from('walks').insert(ins).select().single()
     if(error){ alert('Chyba při založení'); console.error(error); return }
+    setWalks(prev => {
+      const next = [ ...(prev||[]), inserted ]
+      return next.sort((a,b)=> new Date(a.start_time) - new Date(b.start_time))
+    })
     setTab('find')
   }
 
   async function doJoin(w, u){
-    const current = (counts[w.id]||0)
-    if(current+1 > w.capacity) return alert('Už je plno.')
+    if(!sb) return
+    const { data: pre } = await sb.from('walk_participants').select('id').eq('walk_id', w.id)
+    const preCount = (pre||[]).length
+    if(preCount >= w.capacity) return alert('Už je plno.')
+
     const ins = { walk_id:w.id, joiner_name:u.name, joiner_email:u.email }
     const { error } = await sb.from('walk_participants').insert(ins)
     if(error){ alert('Nepovedlo se přidat.'); console.error(error); return }
 
     const { data: plist } = await sb.from('walk_participants').select('joiner_email,joiner_name').eq('walk_id', w.id)
     const participantsEmails = (plist||[]).map(p=>p.joiner_email)
+    const nowCount = participantsEmails.length
 
     await notify('joined',{
       walk: pickPublic(w),
       host:{name:w.host_name,email:w.host_email},
       joiner:{name:u.name,email:u.email},
       participantsEmails,
-      counts:{now:current+1, max:w.capacity}
+      counts:{now:nowCount, max:w.capacity}
     })
 
-    if(current+1 >= w.capacity){
+    if(nowCount >= w.capacity){
       await notify('capacity_reached',{
         walk: pickPublic(w),
         host:{name:w.host_name,email:w.host_email},
         lastJoiner:{name:u.name,email:u.email},
         participantsEmails,
-        counts:{now:current+1, max:w.capacity},
+        counts:{now:nowCount, max:w.capacity},
         ics: icsFor(w)
       })
       await sb.from('walks').update({status:'confirmed'}).eq('id', w.id)

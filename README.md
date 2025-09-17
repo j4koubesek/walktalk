@@ -1,10 +1,4 @@
-# WalkTalk + Supabase (MVP v2.4)
+# WalkTalk + Supabase (MVP v2.6)
 
-Co je nově:
-- **Webhook payloady** (z frontendu):
-  - `joined`: `{ walk, host, joiner, participantsEmails, counts }`
-  - `capacity_reached`: `{ walk, host, lastJoiner, participantsEmails, counts, ics }`
-- `ics` je generovaný přímo na webu (posílá se jako `data.ics`).
-- Vzhled: větší mezery/paddingy, lepší rozestupy.
-
-Nasazení: nahraj obsah složky `walktalk-supabase/` do kořene repa, nastav env (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON`, `VITE_WEBHOOK_URL`), redeploy.
+- FIX: capacity_reached spolehlivě při 3. přihlášení (počítáno z čerstvých dat po INSERTu).
+- UX: nově založená procházka se objeví hned (insert vrací řádek a rovnou ho přidáme do listu).
